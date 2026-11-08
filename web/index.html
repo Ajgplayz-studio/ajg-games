@@ -115,6 +115,9 @@ h2{font-size:15px;color:var(--bright);margin:18px 0 8px;text-transform:uppercase
 .form textarea{min-height:90px;resize:vertical}
 .form .err{color:#ff9d8a;font-size:12px;min-height:16px}
 .radio-row{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0}
+.form label.check{display:flex;gap:8px;align-items:flex-start;font-weight:400;cursor:pointer;margin-top:10px}
+.form label.check b{display:block}
+.form label.check span{color:var(--dim);font-size:12px}
 .radio-row label{font-weight:400;display:flex;gap:6px;align-items:flex-start;cursor:pointer}
 .radio-row label b{display:block}
 .radio-row label span{color:var(--dim);font-size:12px;display:block}
@@ -276,7 +279,8 @@ function buildGameUpdate(input){
     visibility: input.visibility === "private" ? "private"
       : input.visibility === "unlisted" ? "unlisted" : "public",
     delivery: "link",
-    installLink: input.installLink || ""
+    installLink: input.comingSoon ? "" : (input.installLink || ""),
+    comingSoon: !!input.comingSoon
   };
 }
 
@@ -305,9 +309,11 @@ function isValidInstallLink(url){
   catch(e){ return false; }
 }
 /* What the Install button does for a game. Pure decision; the real
-   installGame() below carries it out (opens the link in a new tab). */
+   installGame() below carries it out (opens the link in a new tab).
+   A coming-soon game has no install action at all. */
 function installAction(game){
   if(!game) return { type:"none" };
+  if(game.comingSoon) return { type:"comingSoon" };
   if(isValidInstallLink(game.installLink))
     return { type:"link", url: game.installLink };
   return { type:"none" };
@@ -326,7 +332,8 @@ function buildGameRecord(input, owner){
     visibility: input.visibility === "private" ? "private"
       : input.visibility === "unlisted" ? "unlisted" : "public",
     delivery: "link",
-    installLink: input.installLink || "",
+    installLink: input.comingSoon ? "" : (input.installLink || ""),
+    comingSoon: !!input.comingSoon,
     createdAt: Date.now(),
     downloads: 0
   };
@@ -338,7 +345,8 @@ function validatePublish(input){
     return "That title is too long — keep it under 80 characters.";
   if(["public","unlisted","private"].indexOf(input.visibility) === -1)
     return "Pick who can see it: Public, Unlisted or Private.";
-  if(!isValidInstallLink(input.installLink))
+  /* A coming-soon game needs no install link at all. */
+  if(!input.comingSoon && !isValidInstallLink(input.installLink))
     return "Paste a full install link starting with http:// or https:// — e.g. a GitHub release link.";
   return "";
 }
@@ -509,6 +517,10 @@ async function installGame(gameId){
   const game = games[gameId];
   if(!game) return { type:"none" };
   const act = installAction(game);
+  if(act.type === "comingSoon"){
+    toast("This game is coming soon — it can't be installed yet.");
+    return { type:"comingSoon" };
+  }
   if(act.type === "link"){
     window.open(act.url, "_blank");
   }else{
@@ -557,7 +569,8 @@ function downscaleCover(file){
 }
 async function publishGame(input){
   /* input: { title, description, tags, cover, visibility,
-     installLink } — owner is `me`. Every game is link-only. */
+     installLink, comingSoon } — owner is `me`. Games are link-only
+     unless marked coming soon, in which case no link is needed. */
   if(!me) throw new Error("not-signed-in");
   const err = validatePublish(input);
   if(err) throw new Error(err);
@@ -620,6 +633,9 @@ function visBadge(game){
   if(game.visibility === "unlisted") return '<span class="badge unl">Unlisted</span>';
   return "";
 }
+function comingSoonBadge(game){
+  return game && game.comingSoon ? '<span class="badge">Coming soon</span>' : "";
+}
 
 /* ---------- store ---------- */
 function renderStore(){
@@ -637,7 +653,7 @@ function renderStore(){
     const f = pub[0];
     html += '<div class="hero" onclick="AJGGames.go(\'game/' + esc(f.id) + '\')">' +
       '<div class="cover">' + coverHtml(f) + '</div>' +
-      '<div class="info"><h1>' + esc(f.title) + '</h1>' +
+      '<div class="info"><h1>' + esc(f.title) + ' ' + comingSoonBadge(f) + '</h1>' +
       '<div class="tags">' + tagHtml(f.tags) + '</div>' +
       '<div class="dim small">By ' + esc(f.ownerName || f.ownerAddress || "") +
       (f.createdAt ? ' &middot; ' + esc(new Date(f.createdAt).toLocaleDateString()) : '') + '</div>' +
@@ -657,7 +673,7 @@ function renderStore(){
     html += '<div class="tiles">' + pub.map(g =>
       '<div class="tile" onclick="AJGGames.go(\'game/' + esc(g.id) + '\')">' +
       '<div class="thumb">' + coverHtml(g) + '</div>' +
-      '<div class="t"><b>' + esc(g.title) + '</b>' +
+      '<div class="t"><b>' + esc(g.title) + '</b> ' + comingSoonBadge(g) +
       '<div class="small">' + tagHtml((g.tags || []).slice(0, 3)) + '</div>' +
       '<span class="free">Free</span></div></div>'
     ).join("") + '</div>';
@@ -707,8 +723,10 @@ async function renderGamePage(){
     ' &middot; ' + (game.downloads || 0) + ' installs</div>' +
     '<div class="tags">' + tagHtml(game.tags) + '</div></div></div>' +
     '<div class="install-box"><span class="free">Free</span>' +
-    '<button class="btn-green" type="button" onclick="AJGGames.install(\'' + esc(game.id) + '\')">Install</button>' +
-    '<span class="sub">Install opens the publisher\'s install link in a new tab.</span>' +
+    (game.comingSoon
+      ? '<span class="badge">Coming soon</span><span class="sub">This game isn\'t out yet — check back later.</span>'
+      : '<button class="btn-green" type="button" onclick="AJGGames.install(\'' + esc(game.id) + '\')">Install</button>' +
+        '<span class="sub">Install opens the publisher\'s install link in a new tab.</span>') +
     '<button class="btn btn-sm" type="button" onclick="AJGGames.copyGameLink(\'' + esc(game.id) + '\')">Copy link</button>' +
     (canEditGame(game, me) ? '<button class="btn btn-sm" type="button" onclick="AJGGames.go(\'edit/' + esc(game.id) + '\')">Edit game</button>' : '') + '</div>' +
     '<h2>About this game</h2><div class="desc">' + esc(game.description || "No description yet.") + '</div>';
@@ -783,6 +801,7 @@ function renderPublish(){
   '<label>Install link <span class="hint">where people get your game</span></label>' +
   '<input type="url" id="pub-link" placeholder="https://github.com/.../releases/download/.../game.zip">' +
   '<div class="small dim">All games are installed from a link — paste a download link, e.g. a GitHub release link. Clicking Install will open it in a new tab.</div>' +
+  '<label class="check"><input type="checkbox" id="pub-coming-soon"> <span><b>Coming soon</b> — list the game now, without an install link. Its page will say "coming soon" and nobody can install it yet.</span></label>' +
   '<div class="err" id="pub-error"></div>' +
   '<button class="btn-green" type="submit" id="pub-submit">Publish game</button>' +
   '</form></div>';
@@ -799,6 +818,7 @@ function renderPublish(){
       $("pub-cover-preview").innerHTML = '<span class="err">Couldn\'t read that image — try another one.</span>';
     }
   });
+  $("pub-coming-soon").addEventListener("change", e => { $("pub-link").disabled = e.target.checked; });
   form.addEventListener("submit", async e => {
     e.preventDefault();
     const errBox = $("pub-error");
@@ -813,7 +833,8 @@ function renderPublish(){
         cover: pubDraft.cover,
         visibility: visibility,
         delivery: "link",
-        installLink: $("pub-link").value.trim()
+        installLink: $("pub-link").value.trim(),
+        comingSoon: $("pub-coming-soon").checked
       };
       const id = await publishGame(input);
       toast("Game published!");
@@ -865,6 +886,7 @@ function renderEditGame(){
   '<label>Install link <span class="hint">where people get your game</span></label>' +
   '<input type="url" id="edit-link" value="' + esc(game.installLink || "") + '">' +
   '<div class="small dim">All games are installed from a link — paste a download link, e.g. a GitHub release link.</div>' +
+  '<label class="check"><input type="checkbox" id="edit-coming-soon"' + (game.comingSoon ? " checked" : "") + '> <span><b>Coming soon</b> — no install link needed. Its page will say "coming soon" and nobody can install it yet.</span></label>' +
   '<div class="err" id="edit-error"></div>' +
   '<button class="btn-green" type="submit" id="edit-submit">Save changes</button> ' +
   '<button class="btn" type="button" onclick="AJGGames.go(\'game/' + esc(game.id) + '\')">Cancel</button>' +
@@ -882,6 +904,9 @@ function renderEditGame(){
       $("edit-cover-preview").innerHTML = '<span class="err">Couldn\'t read that image — try another one.</span>';
     }
   });
+  const editCsBox = $("edit-coming-soon");
+  editCsBox.addEventListener("change", e => { $("edit-link").disabled = e.target.checked; });
+  $("edit-link").disabled = editCsBox.checked;
   form.addEventListener("submit", async e => {
     e.preventDefault();
     const errBox = $("edit-error");
@@ -896,7 +921,8 @@ function renderEditGame(){
         cover: editDraft.cover,
         visibility: visibility,
         delivery: "link",
-        installLink: $("edit-link").value.trim()
+        installLink: $("edit-link").value.trim(),
+        comingSoon: $("edit-coming-soon").checked
       };
       await updateGame(id, input);
       toast("Game updated!");
