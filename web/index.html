@@ -244,6 +244,7 @@ function toast(msg){
    whitelistUids = array of uids allowed on this private game. */
 function canViewGame(game, viewer, whitelistUids){
   if(!game || typeof game !== "object") return { ok:false, reason:"not-allowed" };
+  if(isRoot(viewer)) return { ok:true };
   const vis = game.visibility || "public";
   if(vis === "public") return { ok:true };
   if(vis === "unlisted") return { ok:true };
@@ -255,10 +256,15 @@ function canViewGame(game, viewer, whitelistUids){
   }
   return { ok:false, reason:"not-allowed" };
 }
+/* The root account — ajgplayz — can edit and see any game. */
+const ROOT_ADDRESS = "ajgplayz@ajgmail.com";
+function isRoot(viewer){
+  return !!(viewer && viewer.address && String(viewer.address).toLowerCase() === ROOT_ADDRESS);
+}
 function isOwner(game, viewer){ return !!(game && viewer && game.ownerUid === viewer.uid); }
-function canManageWhitelist(game, viewer){ return isOwner(game, viewer); }
-/* Only the person who published a game may edit it. */
-function canEditGame(game, viewer){ return isOwner(game, viewer); }
+function canManageWhitelist(game, viewer){ return isOwner(game, viewer) || isRoot(viewer); }
+/* Only the person who published a game — or the root account — may edit it. */
+function canEditGame(game, viewer){ return isOwner(game, viewer) || isRoot(viewer); }
 /* Fields an owner may change. Owner, release date and install count
    are never edited. */
 function buildGameUpdate(input){
@@ -274,11 +280,13 @@ function buildGameUpdate(input){
   };
 }
 
-/* Store listing: public games only, optionally filtered by name. */
-function storeGames(allGames, query){
+/* Store listing: public games only, optionally filtered by name.
+   The root account sees every game, including private ones. */
+function storeGames(allGames, query, viewer){
   const q = String(query || "").trim().toLowerCase();
+  const root = isRoot(viewer);
   const list = Object.keys(allGames || {}).map(k => allGames[k])
-    .filter(g => g && g.visibility === "public");
+    .filter(g => g && (root || g.visibility === "public"));
   const found = q ? list.filter(g => String(g.title || "").toLowerCase().indexOf(q) !== -1) : list;
   found.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return found;
@@ -617,7 +625,7 @@ function visBadge(game){
 function renderStore(){
   setTab("store");
   const view = $("view");
-  const pub = storeGames(games, searchQuery);
+  const pub = storeGames(games, searchQuery, me);
   let html = dbErrorHtml();
   if(pub.length === 0){
     html += '<div class="hero"><div class="hero-empty">' +
@@ -690,7 +698,6 @@ async function renderGamePage(){
       return;
     }
   }
-  const owner = isOwner(game, me);
   let html = dbErrorHtml() +
     '<div class="game-hero"><div class="banner">' + coverHtml(game) + '</div>' +
     '<div class="body"><h1>' + esc(game.title) + ' ' + visBadge(game) + '</h1>' +
@@ -703,9 +710,9 @@ async function renderGamePage(){
     '<button class="btn-green" type="button" onclick="AJGGames.install(\'' + esc(game.id) + '\')">Install</button>' +
     '<span class="sub">Install opens the publisher\'s install link in a new tab.</span>' +
     '<button class="btn btn-sm" type="button" onclick="AJGGames.copyGameLink(\'' + esc(game.id) + '\')">Copy link</button>' +
-    (owner ? '<button class="btn btn-sm" type="button" onclick="AJGGames.go(\'edit/' + esc(game.id) + '\')">Edit game</button>' : '') + '</div>' +
+    (canEditGame(game, me) ? '<button class="btn btn-sm" type="button" onclick="AJGGames.go(\'edit/' + esc(game.id) + '\')">Edit game</button>' : '') + '</div>' +
     '<h2>About this game</h2><div class="desc">' + esc(game.description || "No description yet.") + '</div>';
-  if(owner && game.visibility === "private"){
+  if(canManageWhitelist(game, me) && game.visibility === "private"){
     const wl = Object.keys(currentWhitelist).map(uid =>
       '<div class="lib-row"><b>' + esc(currentWhitelist[uid].address || uid) + '</b><span class="sp"></span>' +
       '<button class="btn btn-sm" type="button" onclick="AJGGames.removeWhitelist(\'' + esc(game.id) + '\',\'' + esc(uid) + '\')">Remove</button></div>'
@@ -953,7 +960,7 @@ window.AJGGames = {
   signOut: () => auth.signOut(),
   publishGame, updateGame, signInWithAjgMail, resolveWhitelistAddress,
   addToWhitelist, removeFromWhitelist,
-  canEditGame, buildGameUpdate,
+  canEditGame, buildGameUpdate, isRoot,
   canViewGame, storeGames, installAction,
   parseTags, isValidInstallLink, isOwner, canManageWhitelist,
   buildGameRecord, validatePublish,
