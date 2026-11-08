@@ -257,6 +257,22 @@ function canViewGame(game, viewer, whitelistUids){
 }
 function isOwner(game, viewer){ return !!(game && viewer && game.ownerUid === viewer.uid); }
 function canManageWhitelist(game, viewer){ return isOwner(game, viewer); }
+/* Only the person who published a game may edit it. */
+function canEditGame(game, viewer){ return isOwner(game, viewer); }
+/* Fields an owner may change. Owner, release date and install count
+   are never edited. */
+function buildGameUpdate(input){
+  return {
+    title: String(input.title || "").trim(),
+    description: String(input.description || "").trim(),
+    tags: parseTags(input.tags),
+    cover: input.cover || "",
+    visibility: input.visibility === "private" ? "private"
+      : input.visibility === "unlisted" ? "unlisted" : "public",
+    delivery: "link",
+    installLink: input.installLink || ""
+  };
+}
 
 /* Store listing: public games only, optionally filtered by name. */
 function storeGames(allGames, query){
@@ -436,6 +452,11 @@ function currentGameIdFromHash(){
   const parts = h.split("/");
   return parts[0] === "game" ? (parts[1] || null) : null;
 }
+function currentEditIdFromHash(){
+  const h = (window.location.hash || "").replace(/^#\/?/, "");
+  const parts = h.split("/");
+  return parts[0] === "edit" ? (parts[1] || null) : null;
+}
 function gameUrl(id){
   return window.location.origin + window.location.pathname + "#/game/" + id;
 }
@@ -537,6 +558,15 @@ async function publishGame(input){
   const id = ref.key;
   await gamesDb.ref("games/" + id + "/id").set(id);
   return id;
+}
+async function updateGame(gameId, input){
+  const game = games[gameId];
+  if(!game) throw new Error("not-found");
+  if(!canEditGame(game, me)) throw new Error("not-allowed");
+  const err = validatePublish(input);
+  if(err) throw new Error(err);
+  await gamesDb.ref("games/" + gameId).update(buildGameUpdate(input));
+  return gameId;
 }
 
 /* ============================================================
@@ -672,7 +702,8 @@ async function renderGamePage(){
     '<div class="install-box"><span class="free">Free</span>' +
     '<button class="btn-green" type="button" onclick="AJGGames.install(\'' + esc(game.id) + '\')">Install</button>' +
     '<span class="sub">Install opens the publisher\'s install link in a new tab.</span>' +
-    '<button class="btn btn-sm" type="button" onclick="AJGGames.copyGameLink(\'' + esc(game.id) + '\')">Copy link</button></div>' +
+    '<button class="btn btn-sm" type="button" onclick="AJGGames.copyGameLink(\'' + esc(game.id) + '\')">Copy link</button>' +
+    (owner ? '<button class="btn btn-sm" type="button" onclick="AJGGames.go(\'edit/' + esc(game.id) + '\')">Edit game</button>' : '') + '</div>' +
     '<h2>About this game</h2><div class="desc">' + esc(game.description || "No description yet.") + '</div>';
   if(owner && game.visibility === "private"){
     const wl = Object.keys(currentWhitelist).map(uid =>
@@ -787,6 +818,90 @@ function renderPublish(){
   });
 }
 
+/* ---------- edit a game (owner only) ---------- */
+let editDraft = { cover:"" };
+function renderEditGame(){
+  setTab("store");
+  const view = $("view");
+  const id = currentEditIdFromHash();
+  const game = id ? games[id] : null;
+  if(!me){
+    view.innerHTML = '<div class="empty"><h2>Sign in to edit a game.</h2>' +
+      '<p>Only the person who published a game can edit it — sign in with AJG Mail first.</p>' +
+      '<p><button class="btn" type="button" onclick="AJGGames.go(\'signin\')">Sign in with AJG Mail</button></p></div>';
+    return;
+  }
+  if(!game || !canEditGame(game, me)){
+    view.innerHTML = dbErrorHtml() +
+      '<div class="empty"><h2>' + NOT_ALLOWED_MSG + '</h2>' +
+      '<p>Only the person who published this game can edit it.</p>' +
+      '<p><a onclick="AJGGames.go(\'store\')">Back to the store</a></p></div>';
+    return;
+  }
+  editDraft = { cover: game.cover || "" };
+  const vis = game.visibility || "public";
+  const tags = (game.tags || []).join(", ");
+  view.innerHTML = '<h1>Edit game</h1>' +
+  '<div class="form"><form id="edit-form">' +
+  '<label>Title</label><input type="text" id="edit-title" maxlength="80" value="' + esc(game.title) + '">' +
+  '<label>Description</label><textarea id="edit-desc">' + esc(game.description || "") + '</textarea>' +
+  '<label>Tags <span class="hint">comma separated, up to 10</span></label><input type="text" id="edit-tags" value="' + esc(tags) + '">' +
+  '<label>Cover image <span class="hint">optional — becomes a 460&times;215 capsule</span></label>' +
+  '<input type="file" id="edit-cover" accept="image/*"><div id="edit-cover-preview" style="margin:6px 0">' +
+    (game.cover ? '<img src="' + esc(game.cover) + '" alt="current cover" style="width:230px;height:107px;object-fit:cover;border:1px solid #000">' : '') + '</div>' +
+  '<label>Who can see it?</label>' +
+  '<div class="radio-row">' +
+    '<label class="vis-pub"><input type="radio" name="edit-vis" value="public"' + (vis === "public" ? " checked" : "") + '><span><b>Public</b><span>Listed on the store and searchable by name.</span></span></label>' +
+    '<label class="vis-unl"><input type="radio" name="edit-vis" value="unlisted"' + (vis === "unlisted" ? " checked" : "") + '><span><b>Unlisted</b><span>Hidden from the store and search — only people with the link can open it.</span></span></label>' +
+    '<label class="vis-priv"><input type="radio" name="edit-vis" value="private"' + (vis === "private" ? " checked" : "") + '><span><b>Private</b><span>Link only, needs AJG Mail sign-in, and you whitelist who can see it.</span></span></label>' +
+  '</div>' +
+  '<label>Install link <span class="hint">where people get your game</span></label>' +
+  '<input type="url" id="edit-link" value="' + esc(game.installLink || "") + '">' +
+  '<div class="small dim">All games are installed from a link — paste a download link, e.g. a GitHub release link.</div>' +
+  '<div class="err" id="edit-error"></div>' +
+  '<button class="btn-green" type="submit" id="edit-submit">Save changes</button> ' +
+  '<button class="btn" type="button" onclick="AJGGames.go(\'game/' + esc(game.id) + '\')">Cancel</button>' +
+  '</form></div>';
+  /* wire the form */
+  const form = $("edit-form");
+  $("edit-cover").addEventListener("change", async e => {
+    const f = e.target.files && e.target.files[0];
+    if(!f) return;
+    try{
+      editDraft.cover = await downscaleCover(f);
+      $("edit-cover-preview").innerHTML = '<img src="' + esc(editDraft.cover) + '" alt="cover preview" style="width:230px;height:107px;object-fit:cover;border:1px solid #000">';
+    }catch(err){
+      editDraft.cover = game.cover || "";
+      $("edit-cover-preview").innerHTML = '<span class="err">Couldn\'t read that image — try another one.</span>';
+    }
+  });
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const errBox = $("edit-error");
+    const visibility = form.querySelector('input[name="edit-vis"]:checked').value;
+    const btn = $("edit-submit");
+    btn.disabled = true; errBox.textContent = "";
+    try{
+      const input = {
+        title: $("edit-title").value,
+        description: $("edit-desc").value,
+        tags: $("edit-tags").value,
+        cover: editDraft.cover,
+        visibility: visibility,
+        delivery: "link",
+        installLink: $("edit-link").value.trim()
+      };
+      await updateGame(id, input);
+      toast("Game updated!");
+      go("game/" + id);
+    }catch(err){
+      errBox.textContent = (err && err.message === "not-allowed") ? "Only the person who published this game can edit it."
+        : (err && err.message && err.message !== "not-signed-in") ? err.message : authErrorFor(err);
+      btn.disabled = false;
+    }
+  });
+}
+
 /* ---------- sign in ---------- */
 function renderSignin(){
   setTab("store");
@@ -824,6 +939,7 @@ function renderCommunity(){
 function render(){
   const route = currentRoute();
   if(route === "game"){ renderGamePage(); return; }
+  if(route === "edit"){ renderEditGame(); return; }
   if(route === "library"){ renderLibrary(); return; }
   if(route === "publish"){ renderPublish(); return; }
   if(route === "signin"){ renderSignin(); return; }
@@ -835,8 +951,9 @@ function render(){
 window.AJGGames = {
   go, render, install: installGame, play: playGame,
   signOut: () => auth.signOut(),
-  publishGame, signInWithAjgMail, resolveWhitelistAddress,
+  publishGame, updateGame, signInWithAjgMail, resolveWhitelistAddress,
   addToWhitelist, removeFromWhitelist,
+  canEditGame, buildGameUpdate,
   canViewGame, storeGames, installAction,
   parseTags, isValidInstallLink, isOwner, canManageWhitelist,
   buildGameRecord, validatePublish,
